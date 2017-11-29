@@ -1,0 +1,233 @@
+/*============================================================================
+ * Licencia:
+ * Autor:
+ * Fecha:
+ *===========================================================================*/
+/*==================[inlcusiones]============================================*/
+
+//#include "program.h"   // <= su propio archivo de cabecera (opcional)
+#include "sapi.h"        // <= Biblioteca sAPI
+#include "Teclado.h"        // <= Biblioteca sAPI
+
+
+/*==================[definiciones y macros]==================================*/
+typedef enum
+{ 
+   TeclaLiberada, 
+   TeclaFalling,
+   TeclaApretada, 
+   TeclaRising
+}estadoTeclado;
+
+estadoTeclado  estadoTecladoActual;
+typedef enum
+{
+   procesarValorA, 
+   procesarValorB,
+   procesarOperacion, 
+   procesarResultado
+}estadoCalculadora;
+estadoCalculadora procesarDatos;
+
+/*==================[definiciones de datos internos]=========================*/
+/*==================[definiciones de datos externos]=========================*/
+
+
+uint8_t tiempoFalling = 0, tiempoRising = 0;
+bool_t flagIngresoDigito = 0; 
+
+float result;
+// Guarda la ultima tecla apretada
+extern uint16_t *pKey = 0;
+uint16_t digitoIngresado, valorA;
+
+/* Pines del teclado matricial */
+
+// Pines conectados a las Filas --> Salidas (MODO = OUTPUT)
+uint8_t keypadRowPins[4] = {
+   RS232_TXD, // Row 0
+   CAN_RD,    // R1
+   CAN_TD,    // R2
+   T_COL1     // R3
+};
+
+// Pines conectados a las Columnas --> Entradas con pull-up (MODO = INPUT_PULLUP)
+uint8_t keypadColPins[4] = {
+   T_FIL0,    // Column 0
+   T_FIL3,    // C1
+   T_FIL2,    // C2
+   T_COL0     // C3
+};
+
+
+// Vector para mostrar tecla presionada por UART
+uint16_t asciiKeypadKeys[16] = {
+                                '1', '2', '3', 'A',
+                                '4', '5', '6', 'B',
+                                '7', '8', '9', 'C',
+                                '*', '0', '#', 'D'
+                               };
+
+// Vector para mostrar tecla presionada en el display 7 segmentos
+uint16_t keypadKeys[16] = {
+                               1,    2,    3, 0x0a,
+                               4,    5,    6, 0x0b,
+                               7,    8,    9, 0x0c,
+                            0x0e,    0, 0x0f, 0x0d
+                          };
+
+// Vector para mostrar tecla presionada en el display 7 segmentos
+extern uint16_t *keypadKeysExa[16] = {
+                               0x1E,    0x1F,    0x20,   0x57,
+                               0x21,    0x22,    0x23,   0x56,
+                               0x24,    0x25,    0x26,   0x55,
+                               0x53,    0x27,    0x58,   0x54
+                          };                          
+
+
+void actualizarEstadoTecladoMEF(void)
+{
+   delay(1);
+   switch(estadoTecladoActual)
+   {
+      case TeclaLiberada:
+         if( leerTecladoMatricial() )
+            estadoTecladoActual = TeclaFalling;
+         break;
+      case TeclaFalling:
+         tiempoFalling++;
+         //Chequear condiciones de Transicion de estado
+         if( tiempoFalling >= 50)
+         {
+            if ( leerTecladoMatricial() )
+            {
+               estadoTecladoActual = TeclaApretada;
+               //uartWriteByte( UART_USB, asciiKeypadKeys[key] );
+               //datosCalculadora.flagProcesarDigitoX = 1;//Pongo en uno la bandera para indicar luego que se debe procesar el digito ingresado
+               tecladoApretado();
+            }
+            else 
+               estadoTecladoActual = TeclaLiberada;
+            tiempoFalling = 0;
+         }
+         break;
+      case TeclaApretada:
+         if( !leerTecladoMatricial() ) //Verifico si se solto la tecla del teclado
+            estadoTecladoActual = TeclaRising;
+         break;
+      case TeclaRising:
+         tiempoRising++;
+         // Chequear condiciones de transicion de estado
+         if( tiempoRising >= 50 )
+         {
+            if( leerTecladoMatricial() )
+            {
+               estadoTecladoActual = TeclaLiberada;
+               tecladoLiberado();
+            } 
+            else
+               estadoTecladoActual = TeclaApretada;
+            tiempoRising = 0;
+         }           
+         break;
+      default:
+         break;
+   }
+   
+}
+
+/* Devuelve TRUE si hay alguna tecla presionada o FALSE (0) en caso contrario.
+ * Si hay tecla presionada guarda el valor en la variable key.
+ * El valor es un numero de indice entre 0 y 15 */
+bool_t leerTecladoMatricial( void ){
+
+   bool_t retVal = FALSE;
+
+   uint16_t r = 0; // Rows
+   uint16_t c = 0; // Columns
+
+   // Poner todas las filas en estado BAJO
+   for( r=0; r<4; r++ ){
+	  gpioWrite( keypadRowPins[r], LOW );
+   }
+
+   // Chequear todas las columnas buscando si hay alguna tecla presionada
+   for( c=0; c<4; c++ ){
+
+      // Si leo un estado BAJO en una columna entonces puede haber una tecla presionada
+      if( !gpioRead( keypadColPins[c] ) )
+      {
+
+         delay( 50 ); // Anti-rebotes de 50 ms
+
+         // Poner todas las filas en estado ALTO excepto la primera
+         for( r=1; r<4; r++ ){
+            gpioWrite( keypadRowPins[r], HIGH );
+         }
+
+         // Buscar que tecla esta presionada
+         for( r=0; r<4; r++ ){
+
+            // Poner la Fila[r-1] en estado ALTO y la Fila[r] en estado BAJO
+            if( r>0 ){ // Exceptua el indice negativo en el array
+               gpioWrite( keypadRowPins[r-1], HIGH );
+            }
+            gpioWrite( keypadRowPins[r], LOW );
+
+            // Chequear la Columna[c] en Fila[r] para buscar si la tecla esta presionada
+            // Si dicha tecla esta oresionada (en estado BAJO) entonces retorna
+            // graba la tecla en key y retorna TRUE
+            if( !gpioRead( keypadColPins[c] ) ){
+               retVal = TRUE;
+               *pKey = r * 4 + c;
+               /*
+                  Formula de las teclas de Teclado Matricial (Keypad)
+                  de 4 filas (rows) * 5 columnas (columns)
+
+                     c0 c1 c2 c3 c4
+                  r0  0  1  2  3  4
+                  r1  5  6  7  8  9   Si se presiona la tecla r[i] c[j]:
+                  r2 10 11 12 13 14   valor = (i) * cantidadDeColumnas + (j)
+                  r3 15 16 17 18 19
+               */
+               return retVal;
+            }
+         }
+
+      }
+   }
+   return retVal;
+}
+
+void inicializarEstadoTecladoMEF(void){
+   estadoTecladoActual = TeclaLiberada;
+}
+
+void configurarTecladoMatricial( void ){
+   
+   uint8_t i = 0;
+   
+   // Configure Rows as Outputs
+   for( i=0; i<4; i++ ){
+      gpioConfig( keypadRowPins[i], GPIO_OUTPUT );
+   }
+
+   // Configure Columns as Inputs with pull-up resistors enable
+   for( i=0; i<4; i++ ){
+      gpioConfig( keypadColPins[i], GPIO_INPUT_PULLUP );
+   }
+}
+
+void tecladoApretado( void ){
+   gpioWrite( LED3, ON );
+}
+
+void tecladoLiberado( void ){
+   gpioWrite( LED3, OFF );
+}
+
+/*==================[definiciones de funciones internas]=====================*/
+
+/*==================[definiciones de funciones externas]=====================*/
+
+/*==================[fin del archivo]========================================*/

@@ -1,0 +1,9 @@
+
+
+void configurarTecladoMatricial( void );
+bool_t leerTecladoMatricial( void );
+void actualizarEstadoTecladoMEF(void);
+void inicializarEstadoTecladoMEF(void);
+void tecladoLiberado( void );
+void tecladoApretado( void );
+
